@@ -1,16 +1,17 @@
 import json
 import os
 import re
-import difflib
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
 
-KNOWLEDGE_FILE = "knowledge.json"
+KNOWLEDGE_FILE = "data.json"
 
 def load_knowledge():
     if os.path.exists(KNOWLEDGE_FILE):
         with open(KNOWLEDGE_FILE, "r") as f:
             return json.load(f)
     else:
-        return {"knowledge": []}
+        return {"data": []}
 
 def save_knowledge(kb):
     with open(KNOWLEDGE_FILE, "w") as f:
@@ -36,7 +37,6 @@ def try_math(input_text):
     for word, symbol in replacements.items():
         text = text.replace(word, symbol)
 
-    # Only allow numbers and basic operators
     if re.fullmatch(r"[0-9+\-*/ ().]+", text):
         try:
             return str(eval(text, {"__builtins__": {}}))
@@ -70,7 +70,7 @@ def find_facts_or_concepts(kb, input_text):
     return results
 
 def parse_question(text):
-    """We keep WH parsing, but ignore yes/no type entirely."""
+    """Only parse WH questions (no yes/no detection)."""
     text = text.lower().strip()
     tokens = tokenize(text)
     if not tokens:
@@ -95,35 +95,55 @@ def parse_question(text):
     else:
         return None, None, None, None
 
-# Phrase system with per-word matching
+# Improved phrase matching using fuzzywuzzy
+
 recent_phrase_responses = []
 
-def answer_phrase(kb, user_input, threshold=0.7):
-    user_words = set(tokenize(user_input))  # Removes punctuation
-
+def answer_phrase(kb, user_input, threshold=75):
+    # Build a list of (trigger_phrase, response_list) tuples
+    trigger_response_pairs = []
     for entry in kb["knowledge"]:
         if entry["type"] == "phrase":
-            phrase_words = set(tokenize(entry["input"]))
-            if user_words & phrase_words:  # if any word overlaps
-                for resp in entry["outputs"]:
-                    if resp not in recent_phrase_responses:
-                        recent_phrase_responses.append(resp)
-                        if len(recent_phrase_responses) > 5:
-                            recent_phrase_responses.pop(0)
-                        return resp
-                return entry["outputs"][0]
+            # Gather all trigger phrases for this entry
+            triggers = []
+            if isinstance(entry.get("inputs"), list):
+                triggers = entry["inputs"]
+            elif "input" in entry:
+                triggers = [entry["input"]]
+
+            for trig in triggers:
+                trigger_response_pairs.append((trig, entry["outputs"]))
+
+    # Use fuzzy matching to find best trigger phrase match
+    triggers = [trig for trig, _ in trigger_response_pairs]
+    if not triggers:
+        return None
+
+    best_match, score = process.extractOne(user_input, triggers, scorer=fuzz.token_sort_ratio)
+    if score < threshold:
+        return None
+
+    # Find the outputs linked to the best match trigger
+    for trig, outputs in trigger_response_pairs:
+        if trig == best_match:
+            # Return first output not recently used, else first output
+            for resp in outputs:
+                if resp not in recent_phrase_responses:
+                    recent_phrase_responses.append(resp)
+                    if len(recent_phrase_responses) > 5:
+                        recent_phrase_responses.pop(0)
+                    return resp
+            return outputs[0]  # fallback if all outputs are recent
+
     return None
 
-# Example system with fuzzy matching
 def answer_example(kb, user_input, threshold=0.7):
     user_input_lower = user_input.lower().strip()
 
-    # Exact match
     for entry in kb["knowledge"]:
         if entry["type"] == "example" and user_input_lower == entry["input"]:
             return entry["output"]
 
-    # Fuzzy match
     example_inputs = [entry["input"] for entry in kb["knowledge"] if entry["type"] == "example"]
     matches = difflib.get_close_matches(user_input_lower, example_inputs, n=1, cutoff=threshold)
     if matches:
@@ -135,22 +155,18 @@ def answer_example(kb, user_input, threshold=0.7):
     return None
 
 def answer_question(kb, input_text):
-    # 0. Math check first
     math_result = try_math(input_text)
     if math_result is not None:
         return math_result
 
-    # 1. Phrase check
     phrase_answer = answer_phrase(kb, input_text)
     if phrase_answer:
         return phrase_answer
 
-    # 2. Example check
     example_answer = answer_example(kb, input_text)
     if example_answer:
         return example_answer
 
-    # 3. WH-type or general lookup
     qtype, subject, predicate, obj = parse_question(input_text)
 
     if qtype == "wh":
@@ -170,7 +186,6 @@ def answer_question(kb, input_text):
                         facts.append(entry["content"])
             return facts[0] if facts else f"I don't know about {subject}."
 
-    # 4. Fallback
     facts = find_facts_or_concepts(kb, input_text)
     return facts[0] if facts else "I don't know the answer to that."
 
@@ -186,11 +201,17 @@ def add_or_merge_entry(kb, new_entry):
 
     if t == "phrase":
         for entry in kb["knowledge"]:
-            if entry["type"] == "phrase" and entry["input"] == new_entry["input"]:
-                for output in new_entry["outputs"]:
-                    if output not in entry["outputs"]:
-                        entry["outputs"].append(output)
-                return
+            if entry["type"] == "phrase":
+                existing_triggers = set()
+                if isinstance(entry.get("inputs"), list):
+                    existing_triggers.update(entry["inputs"])
+                elif "input" in entry:
+                    existing_triggers.add(entry["input"])
+                if set(new_entry.get("inputs", [])) & existing_triggers:
+                    for output in new_entry["outputs"]:
+                        if output not in entry["outputs"]:
+                            entry["outputs"].append(output)
+                    return
         kb["knowledge"].append(new_entry)
         return
 
@@ -213,7 +234,7 @@ def training_session(kb):
     print("Entered training mode. Type 'exit train' to leave.")
     while True:
         t = input("Type? (fact/rule/example/instruction/concept/association/phrase): ").strip().lower()
-        if t == "exit train":
+        if t == "exit":
             print("Exiting training mode.")
             break
         if t not in ["fact", "rule", "example", "instruction", "concept", "association", "phrase"]:
@@ -241,22 +262,29 @@ def training_session(kb):
             print("Example added/merged.")
 
         elif t == "phrase":
-            phrase_input = input("Enter exact phrase to match: ").strip().lower()
+            triggers = []
+            while True:
+                trig = input("Enter a trigger phrase/word (or press enter to finish): ").strip().lower()
+                if not trig:
+                    break
+                triggers.append(trig)
+
             outputs = []
             while True:
-                out = input("Enter a possible response (or just press enter to finish): ").strip()
+                out = input("Enter a possible response (or press enter to finish): ").strip()
                 if not out:
                     break
                 outputs.append(out)
-            if outputs:
+
+            if triggers and outputs:
                 add_or_merge_entry(kb, {
                     "type": "phrase",
-                    "input": phrase_input,
+                    "inputs": triggers,
                     "outputs": outputs
                 })
                 print("Phrase added/merged.")
             else:
-                print("No outputs entered. Phrase not saved.")
+                print("No triggers or outputs entered. Phrase not saved.")
 
         else:
             content = input(f"Enter the {t} content: ").strip()
@@ -270,7 +298,7 @@ def training_session(kb):
 
 def main():
     kb = load_knowledge()
-    print("Chatbot ready! Type 'train' to add knowledge, 'exit' to quit.")
+    print("Edgard ready! Type 'train' to add knowledge, 'exit' to quit.")
     while True:
         user_input = input("You: ").strip()
         if not user_input:
@@ -282,7 +310,7 @@ def main():
             training_session(kb)
         else:
             response = answer_question(kb, user_input)
-            print("Bot:", response)
+            print("Edgard:", response)
 
 if __name__ == "__main__":
     main()
