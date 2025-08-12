@@ -4,14 +4,14 @@ import re
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 
-KNOWLEDGE_FILE = "data.json"
+KNOWLEDGE_FILE = "knowledge.json"
 
 def load_knowledge():
     if os.path.exists(KNOWLEDGE_FILE):
         with open(KNOWLEDGE_FILE, "r") as f:
             return json.load(f)
     else:
-        return {"data": []}
+        return {"knowledge": []}
 
 def save_knowledge(kb):
     with open(KNOWLEDGE_FILE, "w") as f:
@@ -234,7 +234,7 @@ def training_session(kb):
     print("Entered training mode. Type 'exit train' to leave.")
     while True:
         t = input("Type? (fact/rule/example/instruction/concept/association/phrase): ").strip().lower()
-        if t == "exit":
+        if t == "exit train":
             print("Exiting training mode.")
             break
         if t not in ["fact", "rule", "example", "instruction", "concept", "association", "phrase"]:
@@ -298,7 +298,7 @@ def training_session(kb):
 
 def main():
     kb = load_knowledge()
-    print("Edgard ready! Type 'train' to add knowledge, 'exit' to quit.")
+    print("Chatbot ready! Type 'train' to add knowledge, 'exit' to quit.")
     while True:
         user_input = input("You: ").strip()
         if not user_input:
@@ -310,7 +310,7 @@ def main():
             training_session(kb)
         else:
             response = answer_question(kb, user_input)
-            print("Edgard:", response)
+            print("Bot:", response)
 
 if __name__ == "__main__":
     main()
