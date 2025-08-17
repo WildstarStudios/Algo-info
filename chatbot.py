@@ -3,6 +3,7 @@ import os
 import re
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
+import difflib
 
 KNOWLEDGE_FILE = "knowledge.json"
 
