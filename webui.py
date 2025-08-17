@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string
 import chatbot  # your chatbot.py file (unchanged)
+import difflib
 
 app = Flask(__name__)
 
