@@ -1,0 +1,12 @@
+{
+  "knowledge": [
+    {
+      "type": "association",
+      "content": {
+        "subject": "godot",
+        "predicate": "what is",
+        "object": "godot"
+      }
+    }
+  ]
+}
